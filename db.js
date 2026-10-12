@@ -103,10 +103,15 @@ async function init() {
   const email = (process.env.ADMIN_EMAIL || 'admin@visionhubweb.com.br').toLowerCase();
   const existing = await get('SELECT id FROM admins WHERE email = ?', [email]);
   if (!existing) {
-    const pass = process.env.ADMIN_PASSWORD || '***REMOVED***';
+    let pass = process.env.ADMIN_PASSWORD;
+    let gerada = false;
+    if (!pass) {
+      pass = require('crypto').randomBytes(12).toString('base64url');
+      gerada = true;
+    }
     const name = process.env.ADMIN_NAME || 'Administrador';
     await run('INSERT INTO admins (name, email, password) VALUES (?, ?, ?)', [name, email, bcrypt.hashSync(pass, 10)]);
-    console.log('[db] Admin criado: ' + email);
+    console.log('[db] Admin criado: ' + email + (gerada ? ' | SENHA GERADA (guarde agora): ' + pass : ''));
   }
 
   // Templates de aviso (editaveis no painel)

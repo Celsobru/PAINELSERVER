@@ -10,7 +10,16 @@ const app = express();
 const PORT = process.env.PORT || 3010;
 const BASE = process.env.BASE_PATH || '/painelserver';
 
-app.use(cors());
+// CORS: por padrao apenas mesma origem. Configure ALLOWED_ORIGINS (separadas por virgula) se precisar.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // mesma origem / server-to-server
+    if (ALLOWED_ORIGINS.length === 0) return cb(null, false);
+    return cb(null, ALLOWED_ORIGINS.includes(origin));
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 

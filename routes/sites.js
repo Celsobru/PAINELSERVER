@@ -1,5 +1,5 @@
 const express = require('express');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { all, get, run } = require('../db');
 const { authenticate } = require('./auth');
 
@@ -8,7 +8,7 @@ router.use(authenticate);
 
 function pm2List() {
   return new Promise((resolve) => {
-    exec('pm2 jlist', { maxBuffer: 1024 * 1024 * 8 }, (err, stdout) => {
+    execFile('pm2', ['jlist'], { maxBuffer: 1024 * 1024 * 8 }, (err, stdout) => {
       if (err) return resolve(null);
       try {
         const list = JSON.parse(stdout);
@@ -85,7 +85,7 @@ router.post('/:id/action', async (req, res) => {
   if (!['restart', 'stop', 'start', 'reload'].includes(action)) {
     return res.status(400).json({ success: false, message: 'Acao invalida.' });
   }
-  exec('pm2 ' + action + ' ' + JSON.stringify(s.pm2_name), { maxBuffer: 1024 * 1024 * 4 }, (err, stdout, stderr) => {
+  execFile('pm2', [action, String(s.pm2_name)], { maxBuffer: 1024 * 1024 * 4 }, (err, stdout, stderr) => {
     if (err) return res.status(500).json({ success: false, message: (stderr || err.message || '').toString().slice(0, 500) });
     res.json({ success: true, output: (stdout || '').toString().slice(0, 2000) });
   });
@@ -94,10 +94,13 @@ router.post('/:id/action', async (req, res) => {
 // Acao direta no PM2 pelo nome do processo (funciona tambem para apps nao cadastrados)
 router.post('/pm2/:name/:action', async (req, res) => {
   const { name, action } = req.params;
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    return res.status(400).json({ success: false, message: 'Nome de processo invalido.' });
+  }
   if (!['restart', 'stop', 'start', 'reload'].includes(action)) {
     return res.status(400).json({ success: false, message: 'Acao invalida.' });
   }
-  exec('pm2 ' + action + ' ' + JSON.stringify(name), { maxBuffer: 1024 * 1024 * 4 }, (err, stdout, stderr) => {
+  execFile('pm2', [action, name], { maxBuffer: 1024 * 1024 * 4 }, (err, stdout, stderr) => {
     if (err) return res.status(500).json({ success: false, message: (stderr || err.message || '').toString().slice(0, 500) });
     res.json({ success: true, output: (stdout || '').toString().slice(0, 2000) });
   });

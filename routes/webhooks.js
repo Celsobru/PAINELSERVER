@@ -39,7 +39,14 @@ router.post('/mercadopago', async (req, res) => {
 });
 
 // Provedor generico: { charge_id, gateway, gateway_id }
+// Exige segredo compartilhado (header x-webhook-secret ou ?secret=) para evitar
+// que qualquer pessoa marque cobrancas como pagas.
 router.post('/generic', async (req, res) => {
+  const expected = process.env.WEBHOOK_SECRET;
+  const provided = req.headers['x-webhook-secret'] || req.query.secret;
+  if (!expected || provided !== expected) {
+    return res.status(401).json({ success: false, message: 'Nao autorizado.' });
+  }
   const { charge_id, gateway, gateway_id } = req.body || {};
   if (!charge_id) return res.status(400).json({ success: false, message: 'Informe charge_id.' });
   const out = await markPaid(Number(charge_id), gateway || 'generic', gateway_id || null);
