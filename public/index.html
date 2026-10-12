@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>Painel Server | Vísion Hub Web</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- LOGIN -->
+  <div id="login-view" class="login-wrap">
+    <form id="login-form" class="login-card">
+      <h1>Painel Server</h1>
+      <p class="muted">Gestão de sites, clientes e cobranças</p>
+      <label>E-mail</label>
+      <input type="email" id="login-email" placeholder="admin@visionhubweb.com.br" required>
+      <label>Senha</label>
+      <input type="password" id="login-password" placeholder="••••••••" required>
+      <button type="submit" class="btn primary block">Entrar</button>
+      <div id="login-error" class="error"></div>
+    </form>
+  </div>
+
+  <!-- APP -->
+  <div id="app-view" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">Vísion <span>Painel</span></div>
+      <nav>
+        <a data-view="dashboard" class="active">📊 Dashboard</a>
+        <a data-view="clients">👥 Clientes</a>
+        <a data-view="sites">🌐 Sites</a>
+        <a data-view="charges">💰 Cobranças</a>
+        <a data-view="messages">💬 WhatsApp</a>
+        <a data-view="settings">⚙️ Configurações</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="who"></span>
+        <button id="logout" class="btn ghost small">Sair</button>
+      </div>
+    </aside>
+    <main class="content">
+      <div class="topbar">
+        <h1 id="view-title">Dashboard</h1>
+        <button id="refresh" class="btn ghost">Atualizar</button>
+      </div>
+      <div id="view-dashboard" class="view-content"></div>
+      <div id="view-clients" class="view-content hidden"></div>
+      <div id="view-sites" class="view-content hidden"></div>
+      <div id="view-charges" class="view-content hidden"></div>
+      <div id="view-messages" class="view-content hidden"></div>
+      <div id="view-settings" class="view-content hidden"></div>
+    </main>
+  </div>
+
+  <!-- MODAL -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="modal-title">Título</h3>
+        <button type="button" id="modal-close" class="btn ghost">✕</button>
+      </div>
+      <form id="modal-form" class="modal-body"></form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
