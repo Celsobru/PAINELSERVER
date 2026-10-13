@@ -92,10 +92,20 @@ document.getElementById('login-form').onsubmit = async (e) => {
   e.preventDefault();
   document.getElementById('login-error').textContent = '';
   try {
-    const data = await apiCall('auth/login', 'POST', {
-      email: document.getElementById('login-email').value,
-      password: document.getElementById('login-password').value,
+    // O login NAO usa apiCall(): um 401 aqui significa "email/senha invalidos",
+    // e nao "sessao expirada". Tratamos a resposta direto para exibir a mensagem correta.
+    const res = await fetch(BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: document.getElementById('login-email').value,
+        password: document.getElementById('login-password').value,
+      }),
     });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      throw new Error(data.message || 'Email ou senha invalidos.');
+    }
     localStorage.setItem('painelserver_token', data.token);
     document.getElementById('who').textContent = data.name || data.email;
     showApp();
