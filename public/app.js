@@ -320,19 +320,37 @@ async function sendChargeWA(id) {
 }
 
 /* ---------- sites ---------- */
+function fmtMB(mb) {
+  if (mb === null || mb === undefined || isNaN(mb)) return '-';
+  return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB';
+}
 async function renderSites() {
-  const [sites, st] = await Promise.all([apiCall('sites'), apiCall('sites/status')]);
+  const [sites, st, dk] = await Promise.all([apiCall('sites'), apiCall('sites/status'), apiCall('sites/docker').catch(() => ({ available: false, containers: [] }))]);
   cache.sites = sites.sites;
   let box = '<div class="toolbar"><button class="btn primary" id="site-new">+ Novo site</button></div>';
-  box += '<div class="panel-box"><h3>Apps no PM2</h3><table><thead><tr><th>Nome</th><th>Status</th><th>CPU</th><th>Memória</th><th>Reinícios</th><th>Ações</th></tr></thead><tbody>';
-  if (!st.pm2 || !st.pm2.length) box += '<tr><td colspan="6" class="muted">PM2 indisponível.</td></tr>';
+  box += '<div class="panel-box"><h3>Apps no PM2</h3><table><thead><tr><th>Nome</th><th>Status</th><th>CPU</th><th>Memória</th><th>Armazenamento</th><th>Reinícios</th><th>Ações</th></tr></thead><tbody>';
+  if (!st.pm2 || !st.pm2.length) box += '<tr><td colspan="7" class="muted">PM2 indisponível.</td></tr>';
   (st.pm2 || []).forEach((p) => {
     box += '<tr><td><b>' + esc(p.name) + '</b>' + (p.site ? ' <span class="muted">' + esc(p.site.domain || '') + '</span>' : '') + '</td>' +
       '<td><span class="status-pill"><span class="dot ' + (p.status === 'online' ? 'ready' : 'error') + '"></span>' + esc(p.status) + '</span></td>' +
-      '<td>' + Number(p.cpu || 0).toFixed(1) + '%</td><td>' + Math.round((p.memory || 0) / 1048576) + ' MB</td><td>' + (p.restarts || 0) + '</td>' +
+      '<td>' + Number(p.cpu || 0).toFixed(1) + '%</td><td>' + Math.round((p.memory || 0) / 1048576) + ' MB</td><td>' + fmtMB(p.disk) + '</td><td>' + (p.restarts || 0) + '</td>' +
       '<td class="row-actions"><button class="btn sm" data-pm2="' + esc(p.name) + '" data-action="restart">Reiniciar</button>' +
       '<button class="btn sm red" data-pm2="' + esc(p.name) + '" data-action="stop">Parar</button>' +
       '<button class="btn sm green" data-pm2="' + esc(p.name) + '" data-action="start">Iniciar</button></td></tr>';
+  });
+  box += '</tbody></table></div>';
+
+  box += '<div class="panel-box"><h3>Docker — Bruhouse</h3><table><thead><tr><th>Container</th><th>Imagem</th><th>Status</th><th>CPU</th><th>Memória</th><th>Armazenamento</th><th>Ações</th></tr></thead><tbody>';
+  if (!dk.available) box += '<tr><td colspan="7" class="muted">Docker indisponível.</td></tr>';
+  else if (!dk.containers.length) box += '<tr><td colspan="7" class="muted">Nenhum container encontrado.</td></tr>';
+  (dk.containers || []).forEach((c) => {
+    const up = (c.state || '').toLowerCase() === 'running';
+    box += '<tr><td><b>' + esc(c.name) + '</b></td><td class="muted">' + esc(c.image || '') + '</td>' +
+      '<td><span class="status-pill"><span class="dot ' + (up ? 'ready' : 'error') + '"></span>' + esc(c.status || c.state || '-') + '</span></td>' +
+      '<td>' + esc(c.cpu || '-') + '</td><td>' + esc(c.mem || '-') + '</td><td>' + esc(c.size || '-') + '</td>' +
+      '<td class="row-actions"><button class="btn sm" data-docker="' + esc(c.name) + '" data-daction="restart">Reiniciar</button>' +
+      '<button class="btn sm red" data-docker="' + esc(c.name) + '" data-daction="stop">Parar</button>' +
+      '<button class="btn sm green" data-docker="' + esc(c.name) + '" data-daction="start">Iniciar</button></td></tr>';
   });
   box += '</tbody></table></div>';
 
@@ -351,6 +369,14 @@ async function renderSites() {
     try {
       await apiCall('sites/pm2/' + encodeURIComponent(b.dataset.pm2) + '/' + b.dataset.action, 'POST', {});
       toast('OK: ' + b.dataset.action + ' ' + b.dataset.pm2, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    render('sites');
+  });
+  root.querySelectorAll('[data-docker]').forEach((b) => b.onclick = async () => {
+    if (!confirm(b.dataset.daction + ' ' + b.dataset.docker + '?')) return;
+    try {
+      await apiCall('sites/docker/' + encodeURIComponent(b.dataset.docker) + '/' + b.dataset.daction, 'POST', {});
+      toast('OK: ' + b.dataset.daction + ' ' + b.dataset.docker, 'ok');
     } catch (e) { toast(e.message, 'err'); }
     render('sites');
   });

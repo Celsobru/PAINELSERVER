@@ -20,10 +20,72 @@ function pm2List() {
           cpu: p.monit ? p.monit.cpu : 0,
           memory: p.monit ? p.monit.memory : 0,
           pid: p.pid,
+          cwd: p.pm2_env ? p.pm2_env.pm_cwd : null,
         })));
       } catch (e) {
         resolve(null);
       }
+    });
+  });
+}
+
+// ---- Armazenamento (tamanho da pasta) via `du -sm`, com cache em memoria ----
+const diskCache = new Map(); // dir -> { ts, mb }
+const DISK_TTL = 10 * 60 * 1000; // 10 min
+
+function dirSizeMB(dir) {
+  return new Promise((resolve) => {
+    if (!dir) return resolve(null);
+    const cached = diskCache.get(dir);
+    if (cached && Date.now() - cached.ts < DISK_TTL) return resolve(cached.mb);
+    execFile('du', ['-sm', dir], { maxBuffer: 1024 * 1024, timeout: 60000 }, (err, stdout) => {
+      if (err) return resolve(cached ? cached.mb : null);
+      const mb = parseInt(String(stdout).trim().split(/\s+/)[0], 10);
+      if (isNaN(mb)) return resolve(cached ? cached.mb : null);
+      diskCache.set(dir, { ts: Date.now(), mb });
+      resolve(mb);
+    });
+  });
+}
+
+// ---- Docker ----
+function dockerPs() {
+  return new Promise((resolve) => {
+    execFile('docker', ['ps', '--format', '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}'], { maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const rows = String(stdout).trim().split('\n').filter(Boolean).map((line) => {
+        const parts = line.split('\t');
+        return { name: parts[0], image: parts[1] || '', status: parts[2] || '', state: parts[3] || '' };
+      });
+      resolve(rows);
+    });
+  });
+}
+
+function dockerStats() {
+  return new Promise((resolve) => {
+    execFile('docker', ['stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'], { maxBuffer: 1024 * 1024, timeout: 25000 }, (err, stdout) => {
+      if (err) return resolve({});
+      const map = {};
+      String(stdout).trim().split('\n').filter(Boolean).forEach((line) => {
+        const parts = line.split('\t');
+        if (parts[0]) map[parts[0]] = { cpu: parts[1] || '', mem: parts[2] || '' };
+      });
+      resolve(map);
+    });
+  });
+}
+
+function dockerSizes() {
+  return new Promise((resolve) => {
+    execFile('docker', ['ps', '--size', '--format', '{{.Names}}\t{{.Size}}'], { maxBuffer: 1024 * 1024, timeout: 25000 }, (err, stdout) => {
+      if (err) return resolve({});
+      const map = {};
+      String(stdout).trim().split('\n').filter(Boolean).forEach((line) => {
+        const idx = line.indexOf('\t');
+        if (idx > 0) map[line.slice(0, idx)] = line.slice(idx + 1);
+      });
+      resolve(map);
     });
   });
 }
@@ -35,8 +97,28 @@ router.get('/status', async (req, res) => {
   const sites = await all('SELECT * FROM sites ORDER BY name');
   const byName = {};
   sites.forEach((s) => { if (s.pm2_name) byName[s.pm2_name] = s; });
-  const merged = list.map((p) => Object.assign({}, p, { site: byName[p.name] || null }));
+  const merged = await Promise.all(list.map(async (p) => Object.assign({}, p, { disk: await dirSizeMB(p.cwd), site: byName[p.name] || null })));
   res.json({ success: true, available: true, pm2: merged });
+});
+
+// Containers Docker (Bruhouse e outros)
+router.get('/docker', async (req, res) => {
+  const list = await dockerPs();
+  if (!list) return res.json({ success: true, available: false, containers: [] });
+  const [stats, sizes] = await Promise.all([dockerStats(), dockerSizes()]);
+  const containers = list.map((c) => Object.assign({}, c, stats[c.name] || {}, { size: sizes[c.name] || null }));
+  res.json({ success: true, available: true, containers });
+});
+
+// Acao em container Docker: restart | stop | start
+router.post('/docker/:name/:action', (req, res) => {
+  const { name, action } = req.params;
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ success: false, message: 'Nome de container invalido.' });
+  if (!['restart', 'stop', 'start'].includes(action)) return res.status(400).json({ success: false, message: 'Acao invalida.' });
+  execFile('docker', [action, name], { maxBuffer: 1024 * 1024 * 4, timeout: 60000 }, (err, stdout, stderr) => {
+    if (err) return res.status(500).json({ success: false, message: (stderr || err.message || '').toString().slice(0, 500) });
+    res.json({ success: true, output: (stdout || '').toString().slice(0, 2000) });
+  });
 });
 
 router.get('/', async (req, res) => {
