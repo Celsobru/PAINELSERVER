@@ -52,7 +52,7 @@ function api(path, method, body) {
 
 /* ---------- modal ---------- */
 let modalHandler = null;
-function openModal(title, fieldsHtml, submitLabel, onOk) {
+function openModal(title, fieldsHtml, submitLabel, onSubmit) {
   document.getElementById('modal-title').textContent = title;
   const form = document.getElementById('modal-form');
   form.innerHTML = '<div class="form-grid">' + fieldsHtml + '</div>' +
