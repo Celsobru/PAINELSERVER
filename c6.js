@@ -156,6 +156,12 @@ async function setPixWebhook(url) {
   return api('PUT', '/v2/pix/webhook/' + encodeURIComponent(chave), { webhookUrl: url });
 }
 
+async function getPixWebhook() {
+  const chave = pixKey();
+  if (!chave) throw new Error('C6_PIX_KEY nao configurada');
+  return api('GET', '/v2/pix/webhook/' + encodeURIComponent(chave));
+}
+
 module.exports = {
   configured,
   configured_ok,
@@ -164,5 +170,6 @@ module.exports = {
   getChargeByTxid,
   cancelCharge,
   setPixWebhook,
+  getPixWebhook,
   pixKey,
 };
