@@ -56,8 +56,15 @@ function http(method, pathname, opts) {
   return new Promise((resolve, reject) => {
     const u = new URL(BASE_URL + pathname);
     const a = agent();
-    if (!a) return reject(new Error('Certificado C6 nao configurado (C6_CERT_PATH)'));
-    const data = o.body ? JSON.stringify(o.body) : null;
+    if (!a) return reject(new Error('Certificado C6 nao configurado (C6_CERT_CRT/C6_CERT_KEY ou C6_CERT_PATH)'));
+    let data = null;
+    let contentType = 'application/json';
+    if (o.form) {
+      data = new URLSearchParams(o.form).toString();
+      contentType = 'application/x-www-form-urlencoded';
+    } else if (o.body) {
+      data = JSON.stringify(o.body);
+    }
     const req = https.request({
       method,
       hostname: u.hostname,
@@ -67,7 +74,7 @@ function http(method, pathname, opts) {
       headers: Object.assign(
         {
           Accept: 'application/json',
-          'Content-Type': 'application/json',
+          'Content-Type': contentType,
         },
         data ? { 'Content-Length': Buffer.byteLength(data) } : {},
         o.token ? { Authorization: 'Bearer ' + o.token } : {},
@@ -93,7 +100,7 @@ let tokenCache = { token: null, exp: 0 };
 async function getToken() {
   if (tokenCache.token && Date.now() < tokenCache.exp - 60000) return tokenCache.token;
   const r = await http('POST', '/v1/auth', {
-    body: {
+    form: {
       grant_type: 'client_credentials',
       client_id: process.env.C6_CLIENT_ID,
       client_secret: process.env.C6_CLIENT_SECRET,
