@@ -134,10 +134,10 @@ async function createImmediateCharge(opts) {
     valor: { original: (Number(o.amountCents || 0) / 100).toFixed(2) },
     chave: pixKey(),
   };
-  if (o.txid) body.txid = String(o.txid);
   if (o.description) body.solicitacaoPagador = String(o.description).slice(0, 140);
+  // O txid vai na URL (PUT /v2/pix/cob/{txid}); o BCB rejeita txid no corpo.
   const path = o.txid ? '/v2/pix/cob/' + encodeURIComponent(o.txid) : '/v2/pix/cob';
-  return api('PUT', path, body);
+  return api(o.txid ? 'PUT' : 'POST', path, body);
 }
 
 async function getChargeByTxid(txid) {
