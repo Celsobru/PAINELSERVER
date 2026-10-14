@@ -12,7 +12,8 @@ function run(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function (err) {
       if (err) return reject(err);
-      resolve(this);
+      // Expoe id/lastID/changes de forma consistente para todos os chamadores.
+      resolve({ id: this.lastID, lastID: this.lastID, changes: this.changes });
     });
   });
 }
