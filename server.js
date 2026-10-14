@@ -32,6 +32,7 @@ app.use(BASE + '/api/notifications', require('./routes/notifications'));
 app.use(BASE + '/api/dashboard', require('./routes/dashboard'));
 app.use(BASE + '/api/whatsapp', require('./routes/whatsapp'));
 app.use(BASE + '/api/webhooks', require('./routes/webhooks'));
+app.use(BASE + '/api/config', require('./routes/config'));
 
 app.get(BASE + '/api/status', (req, res) => {
   res.json({ status: 'online', service: 'painelserver', version: '1.0.0', timestamp: new Date().toISOString() });
@@ -50,5 +51,11 @@ app.get('/', (req, res) => res.redirect(BASE + '/'));
   });
   if (String(process.env.WHATSAPP_ENABLED || 'true') !== 'false') {
     whatsapp.start().catch((e) => console.error('[whatsapp] start falhou:', e && e.message));
+  }
+  // Agendador de lembretes (uma vez por dia, conforme Configuracoes)
+  try {
+    require('./scheduler').start();
+  } catch (e) {
+    console.error('[scheduler] falhou ao iniciar:', e && e.message);
   }
 })();

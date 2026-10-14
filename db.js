@@ -99,6 +99,32 @@ async function init() {
     value TEXT
   )`);
 
+  // Migracoes idempotentes: colunas de cobranca Pix + controle de lembretes
+  const chargeCols = [
+    'txid TEXT',
+    'pix_copia_cola TEXT',
+    'pix_location TEXT',
+    'last_notified_at TEXT',
+    'notify_count INTEGER DEFAULT 0',
+    'paid_via TEXT',
+  ];
+  for (const col of chargeCols) {
+    try { await run('ALTER TABLE charges ADD COLUMN ' + col); } catch (e) { /* coluna ja existe */ }
+  }
+
+  // Configuracoes da cobranca automatica (defaults; nao sobrescreve o que ja existe)
+  const cfgDefaults = {
+    pix_key: '',
+    pix_receiver_name: '',
+    pix_city: '',
+    reminder_enabled: 'false',
+    reminder_hour: '9',
+  };
+  for (const k of Object.keys(cfgDefaults)) {
+    const row = await get('SELECT value FROM settings WHERE key = ?', [k]);
+    if (!row) await run('INSERT INTO settings (key, value) VALUES (?, ?)', [k, cfgDefaults[k]]);
+  }
+
   // Admin inicial
   const email = (process.env.ADMIN_EMAIL || 'admin@visionhubweb.com.br').toLowerCase();
   const existing = await get('SELECT id FROM admins WHERE email = ?', [email]);

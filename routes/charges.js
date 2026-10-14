@@ -1,6 +1,7 @@
 const express = require('express');
 const { all, get, run } = require('../db');
 const { authenticate } = require('./auth');
+const billing = require('../billing');
 
 const router = express.Router();
 router.use(authenticate);
@@ -81,6 +82,39 @@ router.post('/:id/pay', async (req, res) => {
 router.post('/:id/cancel', async (req, res) => {
   await run("UPDATE charges SET status = 'canceled' WHERE id = ?", [req.params.id]);
   res.json({ success: true });
+});
+
+// Gera/atualiza o Pix (copia e cola) da cobranca
+router.post('/:id/pix', async (req, res) => {
+  const ch = await billing.loadCharge(req.params.id);
+  if (!ch) return res.status(404).json({ success: false, message: 'Cobranca nao encontrada.' });
+  try {
+    const force = !!(req.body && req.body.force);
+    const r = await billing.ensurePix(ch, { force });
+    if (!r.payload) return res.status(400).json({ success: false, message: r.error || 'Nao foi possivel gerar o Pix.' });
+    res.json({ success: true, pix: r.payload, txid: r.txid, source: r.source });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+});
+
+// Envia a cobranca agora (garante o Pix e registra no log)
+router.post('/:id/notify', async (req, res) => {
+  const ch = await billing.loadCharge(req.params.id);
+  if (!ch) return res.status(404).json({ success: false, message: 'Cobranca nao encontrada.' });
+  if (!ch.client_phone) return res.status(400).json({ success: false, message: 'Cliente sem telefone cadastrado.' });
+  try {
+    const out = await billing.sendCharge(ch);
+    res.json({ success: out.status === 'sent', status: out.status, error: out.error, pix: out.pix });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+});
+
+// Simula um pagamento (teste): da baixa e avisa o cliente no WhatsApp
+router.post('/:id/simulate-pay', async (req, res) => {
+  const out = await billing.markPaidAndNotify(Number(req.params.id), 'simulado', 'teste');
+  res.json({ success: out.ok, detail: out });
 });
 
 module.exports = router;

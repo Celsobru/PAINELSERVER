@@ -264,6 +264,7 @@ async function renderCharges() {
     box += '<tr><td>' + esc(c.client_name || '-') + '</td><td>' + esc(c.description) + '</td><td>' + brl(c.amount_cents) + '</td><td>' + dateBR(c.due_date) + '</td><td>' + esc(c.type || 'avulsa') + '</td><td>' + tag(c.status) + '</td>' +
       '<td class="row-actions">' +
       (c.status !== 'paid' ? '<button class="btn sm green" data-pay="' + c.id + '">Baixa</button>' : '') +
+      '<button class="btn sm" data-pix="' + c.id + '">Pix</button>' +
       (c.status !== 'paid' && c.status !== 'canceled' ? '<button class="btn sm" data-wa="' + c.id + '">Cobrar</button>' : '') +
       '<button class="btn sm" data-edit="' + c.id + '">Editar</button>' +
       '<button class="btn sm red" data-del="' + c.id + '">Excluir</button></td></tr>';
@@ -281,6 +282,7 @@ async function renderCharges() {
   };
   root.querySelectorAll('[data-pay]').forEach((b) => b.onclick = () => payCharge(b.dataset.pay));
   root.querySelectorAll('[data-wa]').forEach((b) => b.onclick = () => sendChargeWA(b.dataset.wa));
+  root.querySelectorAll('[data-pix]').forEach((b) => b.onclick = () => showPix(b.dataset.pix));
   root.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => chargeForm(cache.charges.find((x) => x.id == b.dataset.edit), null));
   root.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { if (confirm('Excluir cobrança?')) { await apiCall('charges/' + b.dataset.del, 'DELETE'); render('charges'); } });
 }
@@ -317,6 +319,37 @@ async function sendChargeWA(id) {
     const r = await apiCall('notifications/charge/' + id, 'POST', {});
     toast('Cobrança enviada no WhatsApp!', 'ok');
   } catch (e) { toast(e.message, 'err'); }
+}
+async function showPix(id) {
+  const c = cache.charges.find((x) => String(x.id) === String(id)) || {};
+  let r;
+  try { r = await apiCall('charges/' + id + '/pix', 'POST', {}); }
+  catch (e) { toast(e.message, 'err'); return; }
+  if (!r.pix) { toast('Configure a chave Pix em Configurações.', 'err'); return; }
+  const src = r.source === 'c6' ? 'C6 Bank (API)' : 'chave Pix local';
+  const html = '<div class="field"><label>Pix copia e cola</label>' +
+    '<textarea id="pix-text" rows="6" readonly style="font-family:monospace;font-size:12px">' + esc(r.pix) + '</textarea></div>' +
+    '<p class="muted">Fonte: ' + esc(src) + ' · txid: ' + esc(r.txid || '') + '</p>' +
+    '<div class="toolbar">' +
+    '<button type="button" class="btn primary" id="pix-copy">Copiar código</button>' +
+    '<button type="button" class="btn" id="pix-send">Enviar no WhatsApp agora</button>' +
+    '<button type="button" class="btn red" id="pix-simpay">Simular pagamento (teste)</button></div>';
+  openModal('Pix — ' + (c.description || ''), html, 'Fechar', async () => {});
+  document.getElementById('pix-copy').onclick = () => {
+    try { navigator.clipboard.writeText(r.pix); toast('Pix copiado!', 'ok'); }
+    catch (e) { const t = document.getElementById('pix-text'); t.select(); document.execCommand('copy'); toast('Pix copiado!', 'ok'); }
+  };
+  document.getElementById('pix-send').onclick = async () => {
+    try {
+      const out = await apiCall('charges/' + id + '/notify', 'POST', {});
+      toast(out.success ? 'Enviado no WhatsApp!' : ('Falha: ' + (out.error || 'WhatsApp desconectado')), out.success ? 'ok' : 'err');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  document.getElementById('pix-simpay').onclick = async () => {
+    if (!confirm('Simular o pagamento desta cobrança (teste)?')) return;
+    try { await apiCall('charges/' + id + '/simulate-pay', 'POST', {}); toast('Pagamento simulado — baixa dada.', 'ok'); closeModal(); render('charges'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
 }
 
 /* ---------- sites ---------- */
@@ -455,13 +488,29 @@ async function refreshWa() {
 /* ---------- settings ---------- */
 async function renderSettings() {
   const me = await apiCall('auth/me');
-  const box = '<div class="panel-box"><h3>Minha conta</h3>' +
+  const cfg = await apiCall('config').catch(() => ({ settings: {}, c6: {}, whatsapp: {} }));
+  const s = cfg.settings || {};
+  let box = '<div class="panel-box"><h3>Minha conta</h3>' +
     '<p class="muted">' + esc(me.admin.name) + ' — ' + esc(me.admin.email) + '</p>' +
     '<div class="field"><label>Senha atual</label><input type="password" id="pw-current"></div>' +
     '<div class="field"><label>Nova senha (mín. 6)</label><input type="password" id="pw-new"></div>' +
-    '<button class="btn primary" id="pw-save">Alterar senha</button></div>' +
-    '<div class="panel-box"><h3>Sobre</h3><p class="muted">Painel Server v1.0 — gestão de sites, clientes, cobranças e avisos via WhatsApp.<br>' +
-    'Avisos por e-mail: desativados (somente WhatsApp por enquanto).<br>Gateway de pagamento: pronto para integração (Mercado Pago via webhook).</p></div>';
+    '<button class="btn primary" id="pw-save">Alterar senha</button></div>';
+
+  box += '<div class="panel-box"><h3>Cobrança automática (Pix)</h3>' +
+    '<p class="muted">A cobrança (com o Pix copia e cola) é enviada no WhatsApp no dia do vencimento e repetida todo dia até o pagamento. Pare de enviar ao dar baixa.</p>' +
+    '<div class="field"><label>Chave Pix (recebedor)</label><input id="cfg-pix-key" value="' + esc(s.pix_key || '') + '" placeholder="e-mail, telefone, CPF/CNPJ ou chave aleatória"></div>' +
+    '<div class="field"><label>Nome do recebedor</label><input id="cfg-pix-name" value="' + esc(s.pix_receiver_name || '') + '" placeholder="VISION HUB WEB"></div>' +
+    '<div class="field"><label>Cidade do recebedor</label><input id="cfg-pix-city" value="' + esc(s.pix_city || '') + '" placeholder="BAURU"></div>' +
+    '<div class="field"><label><input type="checkbox" id="cfg-rem"' + (String(s.reminder_enabled) === 'true' ? ' checked' : '') + '> Ativar lembretes diários automáticos</label></div>' +
+    '<div class="field"><label>Hora do envio (0 a 23, fuso de São Paulo)</label><input type="number" min="0" max="23" id="cfg-hour" value="' + esc(s.reminder_hour || '9') + '"></div>' +
+    '<div class="toolbar"><button class="btn primary" id="cfg-save">Salvar</button>' +
+    '<button class="btn" id="cfg-run">Rodar lembretes agora</button></div>' +
+    '<p class="muted" style="margin-top:8px">API do banco (C6): ' + (cfg.c6 && cfg.c6.configured ? '<b class="green">configurado</b>' : 'não configurado — usando Pix gerado localmente') +
+    ' · WhatsApp: ' + esc((cfg.whatsapp && cfg.whatsapp.status) || '-') + '</p></div>';
+
+  box += '<div class="panel-box"><h3>Sobre</h3><p class="muted">Painel Server v1.0 — gestão de sites, clientes, cobranças e avisos via WhatsApp.<br>' +
+    'Cobrança Pix automática (envio no vencimento + lembretes diários + baixa via webhook do banco).<br>API C6 Bank (Pix) e Mercado Pago (webhook genérico) prontos para integrar.</p></div>';
+
   document.getElementById('view-settings').innerHTML = box;
   document.getElementById('pw-save').onclick = async () => {
     try {
@@ -469,6 +518,26 @@ async function renderSettings() {
       toast('Senha alterada!', 'ok');
       document.getElementById('pw-current').value = '';
       document.getElementById('pw-new').value = '';
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  document.getElementById('cfg-save').onclick = async () => {
+    try {
+      await apiCall('config', 'PUT', {
+        pix_key: document.getElementById('cfg-pix-key').value.trim(),
+        pix_receiver_name: document.getElementById('cfg-pix-name').value,
+        pix_city: document.getElementById('cfg-pix-city').value,
+        reminder_enabled: document.getElementById('cfg-rem').checked ? 'true' : 'false',
+        reminder_hour: document.getElementById('cfg-hour').value,
+      });
+      toast('Configurações salvas!', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  document.getElementById('cfg-run').onclick = async () => {
+    if (!confirm('Enviar a cobrança (WhatsApp) agora para todas as cobranças vencidas/pendentes?')) return;
+    try {
+      const r = await apiCall('config/run-reminders', 'POST', {});
+      const res = r.result || {};
+      toast('Candidatas: ' + (res.candidates || 0) + ' | Enviadas: ' + (res.sent || 0) + ' | Falhas: ' + (res.failed || 0), res.failed ? 'err' : 'ok');
     } catch (e) { toast(e.message, 'err'); }
   };
 }
