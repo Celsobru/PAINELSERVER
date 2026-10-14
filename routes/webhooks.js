@@ -69,6 +69,28 @@ function collectItems(node, out) {
   }
 }
 
+// Reconsulta o banco para confirmar o pagamento. O C6 nao assina o webhook, e a
+// propagacao no endpoint de consulta pode demorar alguns segundos depois do
+// pagamento, entao tentamos algumas vezes antes de desistir (a reconciliacao
+// cobre o caso de nao confirmar aqui).
+async function confirmWithRetry(txid, attempts) {
+  const n = attempts || 5;
+  let last = '';
+  for (let i = 0; i < n; i++) {
+    if (!c6.configured_ok()) return { confirmed: true, last: 'c6_nao_configurado' };
+    try {
+      const bank = await c6.getChargeByTxid(txid);
+      const st = bank && bank.status ? String(bank.status).toUpperCase() : '';
+      if (st === 'CONCLUIDA' || st === 'CONCLUIDO') return { confirmed: true, bank, last: st };
+      last = st || 'sem_status';
+    } catch (e) {
+      last = 'erro: ' + e.message;
+    }
+    if (i < 4) await new Promise((r) => setTimeout(r, 3000));
+  }
+  return { confirmed: false, last };
+}
+
 router.get('/c6', (req, res) => res.status(200).json({ ok: true }));
 
 router.post('/c6', async (req, res) => {
@@ -103,18 +125,12 @@ router.post('/c6', async (req, res) => {
       const ch = await get('SELECT * FROM charges WHERE txid = ?', [txid]);
       if (!ch) { results.push({ txid, status: 'charge_not_found' }); continue; }
 
-      // Reconsulta o banco para confirmar (o C6 nao assina o webhook).
+      // Reconsulta o banco para confirmar (o C6 nao assina o webhook), com retentativas.
       let confirmed = true;
       if (c6.configured_ok()) {
-        try {
-          const bank = await c6.getChargeByTxid(txid);
-          const st = bank && bank.status ? String(bank.status).toUpperCase() : '';
-          confirmed = st === 'CONCLUIDA' || st === 'CONCLUIDO';
-          if (!confirmed) results.push({ txid, status: 'nao_confirmado', bank: st });
-        } catch (e) {
-          results.push({ txid, status: 'reconsulta_falhou', error: e.message });
-          continue;
-        }
+        const conf = await confirmWithRetry(txid, 5);
+        confirmed = conf.confirmed;
+        if (!confirmed) results.push({ txid, status: 'nao_confirmado', bank: conf.last });
       }
       if (!confirmed) continue;
 
@@ -122,6 +138,7 @@ router.post('/c6', async (req, res) => {
       results.push({ txid, charge_id: ch.id, ok: out.ok, already: out.already });
     }
 
+    console.log('[webhook c6] resultados:', JSON.stringify(results));
     res.status(200).json({ success: true, processed: results.length, results });
   } catch (e) {
     console.error('webhook c6:', e.message);
