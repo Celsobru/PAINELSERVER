@@ -113,9 +113,9 @@ async function getToken() {
   return tokenCache.token;
 }
 
-async function api(method, pathname, body) {
+async function api(method, pathname, body, headers) {
   const token = await getToken();
-  const r = await http(method, pathname, { body, token });
+  const r = await http(method, pathname, { body, token, headers });
   if (r.status >= 400) {
     throw new Error('C6 ' + r.status + ': ' + JSON.stringify(r.body).slice(0, 400));
   }
@@ -150,16 +150,17 @@ async function cancelCharge(txid) {
 }
 
 // Cadastra a URL de webhook para a chave Pix (BACEN). url deve ser HTTPS publica.
+// Obs.: o endpoint de webhook do BCB so aceita Accept: application/problem+json.
 async function setPixWebhook(url) {
   const chave = pixKey();
   if (!chave) throw new Error('C6_PIX_KEY nao configurada');
-  return api('PUT', '/v2/pix/webhook/' + encodeURIComponent(chave), { webhookUrl: url });
+  return api('PUT', '/v2/pix/webhook/' + encodeURIComponent(chave), { webhookUrl: url }, { Accept: 'application/problem+json' });
 }
 
 async function getPixWebhook() {
   const chave = pixKey();
   if (!chave) throw new Error('C6_PIX_KEY nao configurada');
-  return api('GET', '/v2/pix/webhook/' + encodeURIComponent(chave));
+  return api('GET', '/v2/pix/webhook/' + encodeURIComponent(chave), null, { Accept: 'application/problem+json' });
 }
 
 module.exports = {
