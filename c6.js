@@ -2,7 +2,8 @@
 // Autenticacao: mTLS (certificado PKCS12) + OAuth2 client_credentials em POST /v1/auth.
 // Envs esperadas (no .env da VPS, NUNCA no repositorio):
 //   C6_CLIENT_ID, C6_CLIENT_SECRET
-//   C6_CERT_PATH (caminho do .pfx/.p12), C6_CERT_PASSPHRASE
+//   C6_CERT_CRT + C6_CERT_KEY (arquivos PEM cert.crt / cert.key do C6)
+//     ou C6_CERT_PATH (.pfx/.p12) + C6_CERT_PASSPHRASE
 //   C6_PIX_KEY (chave Pix recebedora)
 //   C6_BASE_URL (default sandbox), C6_WEBHOOK_TOKEN (validacao do webhook)
 const fs = require('fs');
@@ -12,25 +13,42 @@ const { URL } = require('url');
 const BASE_URL = process.env.C6_BASE_URL || 'https://baas-api-sandbox.c6bank.info';
 
 let cachedAgent = null;
+function certReady() {
+  const crtPath = process.env.C6_CERT_CRT;
+  const keyPath = process.env.C6_CERT_KEY;
+  if (crtPath && keyPath && fs.existsSync(crtPath) && fs.existsSync(keyPath)) return true;
+  const pfxPath = process.env.C6_CERT_PATH;
+  if (pfxPath && fs.existsSync(pfxPath)) return true;
+  return false;
+}
 function agent() {
   if (cachedAgent) return cachedAgent;
+  // Formato PEM (cert.crt + cert.key) - como o C6 entrega no Web Banking
+  const crtPath = process.env.C6_CERT_CRT;
+  const keyPath = process.env.C6_CERT_KEY;
+  if (crtPath && keyPath && fs.existsSync(crtPath) && fs.existsSync(keyPath)) {
+    cachedAgent = new https.Agent({
+      cert: fs.readFileSync(crtPath),
+      key: fs.readFileSync(keyPath),
+      keepAlive: true,
+    });
+    return cachedAgent;
+  }
+  // Formato PKCS12 (.pfx/.p12) - alternativa
   const pfxPath = process.env.C6_CERT_PATH;
-  if (!pfxPath || !fs.existsSync(pfxPath)) return null;
-  cachedAgent = new https.Agent({
-    pfx: fs.readFileSync(pfxPath),
-    passphrase: process.env.C6_CERT_PASSPHRASE || undefined,
-    keepAlive: true,
-  });
-  return cachedAgent;
+  if (pfxPath && fs.existsSync(pfxPath)) {
+    cachedAgent = new https.Agent({
+      pfx: fs.readFileSync(pfxPath),
+      passphrase: process.env.C6_CERT_PASSPHRASE || undefined,
+      keepAlive: true,
+    });
+    return cachedAgent;
+  }
+  return null;
 }
 
 function configured() {
-  return !!(
-    process.env.C6_CLIENT_ID &&
-    process.env.C6_CLIENT_SECRET &&
-    process.env.C6_CERT_PATH &&
-    fs.existsSync(process.env.C6_CERT_PATH)
-  );
+  return !!(process.env.C6_CLIENT_ID && process.env.C6_CLIENT_SECRET && certReady());
 }
 
 function http(method, pathname, opts) {
