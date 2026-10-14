@@ -5,6 +5,7 @@
 const billing = require('./billing');
 
 let timer = null;
+let timerReconcile = null;
 
 function brtNow() {
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -33,13 +34,27 @@ async function tick() {
   }
 }
 
+async function reconcileTick() {
+  try {
+    const r = await billing.reconcilePending();
+    if (r && r.paid) console.log('[scheduler] baixa automatica (reconciliacao):', JSON.stringify(r));
+  } catch (e) {
+    console.error('[scheduler] reconciliacao erro:', e.message);
+  }
+}
+
 function start() {
   if (String(process.env.REMINDERS_ENABLED || 'true') === 'false') return;
   if (timer) return;
   timer = setInterval(tick, 10 * 60 * 1000);
   if (timer.unref) timer.unref();
+  // Reconciliacao a cada 2 min: consulta o banco e da baixa nas cobrancas pagas
+  // mesmo sem webhook.
+  timerReconcile = setInterval(reconcileTick, 2 * 60 * 1000);
+  if (timerReconcile.unref) timerReconcile.unref();
   setTimeout(tick, 90 * 1000);
+  setTimeout(reconcileTick, 30 * 1000);
   console.log('[scheduler] agendador de lembretes ativo');
 }
 
-module.exports = { start, tick };
+module.exports = { start, tick, reconcileTick };

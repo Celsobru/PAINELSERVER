@@ -117,4 +117,16 @@ router.post('/:id/simulate-pay', async (req, res) => {
   res.json({ success: out.ok, detail: out });
 });
 
+// Reenvia a mensagem de "pagamento recebido" (para cobranca ja paga)
+router.post('/:id/notify-paid', async (req, res) => {
+  const ch = await billing.loadCharge(req.params.id);
+  if (!ch) return res.status(404).json({ success: false, message: 'Cobranca nao encontrada.' });
+  try {
+    const out = await billing.sendPaid(ch);
+    res.json({ success: out.status === 'sent', status: out.status, error: out.error });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+});
+
 module.exports = router;

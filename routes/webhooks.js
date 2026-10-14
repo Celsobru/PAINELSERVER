@@ -69,15 +69,27 @@ function collectItems(node, out) {
   }
 }
 
+router.get('/c6', (req, res) => res.status(200).json({ ok: true }));
+
 router.post('/c6', async (req, res) => {
   try {
+    // Corpo cru (montado com express.raw no server.js): registra o que chegou
+    // e tenta parsear JSON manualmente, independente do content-type.
+    let body = req.body;
+    if (Buffer.isBuffer(body)) {
+      const raw = body.toString('utf8');
+      console.log('[webhook c6] recebido ip=%s ct=%s len=%d body=%s', req.ip, req.headers['content-type'] || '-', raw.length, raw.slice(0, 600));
+      try { body = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { console.error('[webhook c6] JSON invalido:', raw.slice(0, 400)); body = {}; }
+    } else {
+      console.log('[webhook c6] recebido ip=%s ct=%s body=%s', req.ip, req.headers['content-type'] || '-', JSON.stringify(body || {}).slice(0, 600));
+    }
+
     const expected = process.env.C6_WEBHOOK_TOKEN;
     const provided = req.query.token || req.headers['x-webhook-token'];
     if (!expected || provided !== expected) {
       return res.status(401).json({ success: false, message: 'Nao autorizado.' });
     }
 
-    const body = req.body || {};
     const items = [];
     collectItems(body, items);
     if (body.information) {

@@ -45,4 +45,14 @@ router.post('/run-reminders', async (req, res) => {
   }
 });
 
+// Consulta o banco agora e da baixa nas cobrancas pagas (reconciliacao manual)
+router.post('/reconcile', async (req, res) => {
+  try {
+    const result = await billing.reconcilePending();
+    res.json({ success: true, result });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+});
+
 module.exports = router;

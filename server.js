@@ -20,6 +20,9 @@ app.use(cors({
   },
   credentials: true,
 }));
+// O webhook do C6 precisa do corpo cru (o C6 pode enviar outro content-type),
+// entao parseamos como Buffer ANTES do parser JSON global.
+app.use(BASE + '/api/webhooks/c6', express.raw({ type: () => true, limit: '1mb' }));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 

@@ -174,6 +174,34 @@ async function markPaidAndNotify(chargeId, gateway, gatewayId) {
   return { ok: true, charge: ch, notify };
 }
 
+/* ---------- reconciliacao (fallback do webhook) ---------- */
+// Reconsulta o banco para cobrancas Pix pendentes e da baixa nas que constam
+// como pagas. Garante a baixa MESMO se o webhook do banco nao chegar.
+async function reconcilePending() {
+  if (!c6.configured_ok()) return { skipped: 'c6 nao configurado' };
+  const rows = await all(
+    "SELECT * FROM charges WHERE status IN ('pending','overdue') AND gateway = 'c6' AND txid IS NOT NULL AND TRIM(txid) <> ''"
+  );
+  let checked = 0, paid = 0, errors = 0;
+  for (const ch of rows) {
+    checked++;
+    try {
+      const bank = await c6.getChargeByTxid(ch.txid);
+      const st = bank && bank.status ? String(bank.status).toUpperCase() : '';
+      if (st === 'CONCLUIDA') {
+        const e2e = (bank.pix && bank.pix[0] && bank.pix[0].endToEndId) || ch.txid;
+        const out = await markPaidAndNotify(ch.id, 'c6', e2e);
+        if (out.ok && !out.already) paid++;
+      }
+    } catch (e) {
+      errors++;
+      console.error('[billing] reconcile falhou (' + ch.txid + '):', e.message);
+    }
+  }
+  await setSetting('reconcile_last_run', new Date().toISOString());
+  return { checked, paid, errors };
+}
+
 /* ---------- lembretes ---------- */
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
@@ -219,6 +247,7 @@ module.exports = {
   sendPaid,
   touchCharge,
   markPaidAndNotify,
+  reconcilePending,
   runReminders,
   loadCharge,
 };
