@@ -137,6 +137,11 @@ async function getChargeByTxid(txid) {
   return api('GET', '/v2/pix/cob/' + encodeURIComponent(txid));
 }
 
+// Cancela (remove) uma cobranca Pix
+async function cancelCharge(txid) {
+  return api('PATCH', '/v2/pix/cob/' + encodeURIComponent(txid), { status: 'REMOVIDA_PELO_USUARIO_RECEBEDOR' });
+}
+
 // Cadastra a URL de webhook para a chave Pix (BACEN). url deve ser HTTPS publica.
 async function setPixWebhook(url) {
   const chave = pixKey();
@@ -150,6 +155,7 @@ module.exports = {
   getToken,
   createImmediateCharge,
   getChargeByTxid,
+  cancelCharge,
   setPixWebhook,
   pixKey,
 };

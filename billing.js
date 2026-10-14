@@ -30,9 +30,15 @@ async function setSetting(key, value) {
 }
 
 /* ---------- Pix ---------- */
-function txidFor(charge) {
+// txid para BR Code estatico (local): ate 25 caracteres alfanumericos
+function txidLocal(charge) {
   return ('VISION' + String(charge.id).padStart(10, '0')).slice(0, 25);
 }
+// txid para a API do banco (Pix cob/cobv): 26 a 35 caracteres alfanumericos
+function txidBank(charge) {
+  return ('VISION' + String(charge.id).padStart(22, '0')).slice(0, 32);
+}
+function isValidBankTxid(t) { return /^[A-Za-z0-9]{26,35}$/.test(String(t || '')); }
 
 async function loadCharge(id) {
   return get(
@@ -48,10 +54,13 @@ async function ensurePix(charge, opts) {
   if (!o.force && charge.pix_copia_cola) {
     return { payload: charge.pix_copia_cola, txid: charge.txid, source: charge.gateway === 'c6' ? 'c6' : 'local', cached: true };
   }
-  const txid = charge.txid && String(charge.txid).length ? charge.txid : txidFor(charge);
+  const useBank = c6.configured_ok();
+  const txid = useBank
+    ? (isValidBankTxid(charge.txid) ? charge.txid : txidBank(charge))
+    : ((charge.txid && String(charge.txid).length <= 25) ? charge.txid : txidLocal(charge));
 
   // 1) Banco C6
-  if (c6.configured_ok()) {
+  if (useBank) {
     try {
       const resp = await c6.createImmediateCharge({ amountCents: charge.amount_cents, txid, description: charge.description });
       const payload = resp && resp.pixCopiaECola ? resp.pixCopiaECola : null;
