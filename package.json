@@ -5,7 +5,8 @@
   "description": "Painel de gestao de sites, clientes e cobrancas - Vision Hub Web",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "node scripts/patch-wwebjs-media.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
