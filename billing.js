@@ -105,10 +105,14 @@ async function buildChargeMessage(charge) {
     pix: pixRes.payload || '',
     txid: pixRes.txid || '',
   };
+  // O codigo Pix NAO vai junto do texto: ele e enviado em uma mensagem
+  // separada, somente com o codigo, para o cliente conseguir copiar tudo
+  // com um toque (se estiver no meio do texto, a copia no WhatsApp falha).
   let message = fillTemplate(tplRow && tplRow.value, vars);
-  if (pixRes.payload && message.indexOf(pixRes.payload) === -1) {
-    message += '\n\n*Pix copia e cola:*\n' + pixRes.payload;
+  if (pixRes.payload && message.indexOf(pixRes.payload) !== -1) {
+    message = message.split(pixRes.payload).join('').replace(/\n{3,}/g, '\n\n').trim();
   }
+  if (pixRes.payload) message += '\n\n👇 O codigo Pix copia e cola vai na mensagem seguinte.';
   return { message, pix: pixRes.payload, txid: pixRes.txid, source: pixRes.source };
 }
 
@@ -143,12 +147,44 @@ async function touchCharge(id) {
   await run("UPDATE charges SET last_notified_at = datetime('now'), notify_count = COALESCE(notify_count, 0) + 1 WHERE id = ?", [id]);
 }
 
+// Envia o texto da cobranca e, em seguida, o codigo Pix em uma mensagem
+// separada (somente o codigo), para o cliente copiar tudo com um toque.
+async function sendChargeMessages(payload) {
+  const textOut = await sendAndLog({
+    client_id: payload.client_id,
+    charge_id: payload.charge_id,
+    phone: payload.phone,
+    message: payload.message,
+  });
+  let pixOut = null;
+  const pix = payload.pix;
+  const alreadyInline = pix && String(payload.message || '').indexOf(pix) !== -1;
+  if (textOut.status === 'sent' && pix && !alreadyInline) {
+    pixOut = await sendAndLog({
+      client_id: payload.client_id,
+      charge_id: payload.charge_id,
+      phone: payload.phone,
+      message: pix,
+    });
+  }
+  return Object.assign({}, textOut, {
+    pixStatus: pixOut ? pixOut.status : (pix ? 'skipped' : 'none'),
+    pixError: pixOut ? pixOut.error : null,
+  });
+}
+
 // Envia a cobranca para o telefone do cliente (garante o Pix).
 async function sendCharge(charge) {
   const phone = charge.client_phone;
   if (!phone) throw new Error('Cliente sem telefone cadastrado.');
   const built = await buildChargeMessage(charge);
-  const out = await sendAndLog({ client_id: charge.client_id, charge_id: charge.id, phone, message: built.message });
+  const out = await sendChargeMessages({
+    client_id: charge.client_id,
+    charge_id: charge.id,
+    phone,
+    message: built.message,
+    pix: built.pix,
+  });
   if (out.status === 'sent') await touchCharge(charge.id);
   return Object.assign(out, { pix: built.pix, source: built.source });
 }
@@ -243,6 +279,7 @@ module.exports = {
   buildChargeMessage,
   buildPaidMessage,
   sendAndLog,
+  sendChargeMessages,
   sendCharge,
   sendPaid,
   touchCharge,

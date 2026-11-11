@@ -19,9 +19,16 @@ router.post('/charge/:id', async (req, res) => {
   if (!phone) return res.status(400).json({ success: false, message: 'Cliente sem telefone cadastrado.' });
   const built = await billing.buildChargeMessage(ch);
   const message = (req.body && req.body.message) || built.message;
-  const out = await billing.sendAndLog({ client_id: ch.client_id, charge_id: ch.id, phone, message });
+  const out = await billing.sendChargeMessages({ client_id: ch.client_id, charge_id: ch.id, phone, message, pix: built.pix });
   if (out.status === 'sent') await billing.touchCharge(ch.id);
-  res.json({ success: out.status === 'sent', status: out.status, error: out.error, pix: built.pix });
+  res.json({
+    success: out.status === 'sent',
+    status: out.status,
+    error: out.error,
+    pix: built.pix,
+    pixStatus: out.pixStatus,
+    pixError: out.pixError,
+  });
 });
 
 // Enviar aviso de pagamento recebido
