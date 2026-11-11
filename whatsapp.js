@@ -37,6 +37,7 @@ class WhatsAppBot {
     this.healthTimer = null;
     this.retryTimer = null;
     this.recovering = null;
+    this.connecting = null;
     this.destroying = false;
   }
 
@@ -50,8 +51,18 @@ class WhatsAppBot {
     await this.connect();
   }
 
-  // Cria o client e tenta inicializar. Se travar, limpa tudo e tenta de novo.
+  // Serializa as tentativas de conexao (duas ao mesmo tempo orfanam o Chrome).
   async connect() {
+    if (!this.started) return;
+    if (this.connecting) return this.connecting;
+    this.connecting = this.doConnect().finally(() => {
+      this.connecting = null;
+    });
+    return this.connecting;
+  }
+
+  // Cria o client e tenta inicializar. Se travar, limpa tudo e tenta de novo.
+  async doConnect() {
     if (!this.started) return;
     this.attempt += 1;
     const attempt = this.attempt;
@@ -108,26 +119,22 @@ class WhatsAppBot {
     });
 
     client.on('disconnected', (r) => {
+      if (this.client !== client || this.destroying || this.recovering) return;
       const reason = String(r);
       this.ready = false;
       this.lastError = reason;
       this.stopReadyWatchdog();
       this.stopHealthCheck();
-      if (this.client === client) this.client = null;
       if (reason === 'LOGOUT') {
         this.status = 'disconnected';
         this.started = false;
+        this.client = null;
         console.log('[whatsapp] sessao encerrada (logout). Escaneie o QR Code no painel.');
         return;
       }
       this.status = 'disconnected';
-      console.log('[whatsapp] desconectado (' + reason + '); reconectando em 15s');
-      setTimeout(() => {
-        if (this.started && !this.recovering) {
-          this.attempt = 0;
-          this.connect();
-        }
-      }, 15000);
+      console.log('[whatsapp] desconectado (' + reason + '); reconectando...');
+      this.recover('desconectado: ' + reason).catch(() => {});
     });
 
     let timer = null;
@@ -277,10 +284,11 @@ class WhatsAppBot {
     this.recovering = (async () => {
       try {
         await this.destroyClient(client);
-      } catch (e) {}
-      this.attempt = 0;
-      this.recovering = null;
-      if (this.started) await this.connect();
+        this.attempt = 0;
+        if (this.started) await this.connect();
+      } finally {
+        this.recovering = null;
+      }
       return true;
     })();
     return this.recovering;
