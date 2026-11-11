@@ -5,6 +5,16 @@ const qrcode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
 
+// Tempo maximo para o client.initialize() resolver (page.goto as vezes trava).
+const INIT_TIMEOUT_MS = Number(process.env.WA_INIT_TIMEOUT_MS || 90000);
+// Se o app-state sync do WhatsApp Web nao disparar, forcamos a mao.
+const READY_WATCHDOG_MS = Number(process.env.WA_READY_WATCHDOG_MS || 20000);
+const MAX_INIT_ATTEMPTS = 3;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 class WhatsAppBot {
   constructor() {
     this.client = null;
@@ -15,19 +25,36 @@ class WhatsAppBot {
     this.lastError = null;
     this.started = false;
     this.sessionDir = path.join(__dirname, 'whatsapp-session');
+    this.attempt = 0;
+    this.syncPokes = 0;
+    this.readyWatchdog = null;
+    this.retryTimer = null;
   }
 
   async start() {
     if (this.started) return;
     this.started = true;
+    this.attempt = 0;
     this.qrCodeBase64 = null;
+    this.lastError = null;
     this.status = 'initializing';
+    await this.connect();
+  }
+
+  // Cria o client e tenta inicializar. Se travar, limpa tudo e tenta de novo.
+  async connect() {
+    if (!this.started) return;
+    this.attempt += 1;
+    const attempt = this.attempt;
+    this.status = this.status === 'qr' ? 'qr' : 'initializing';
+    this.removeSingletonLocks();
 
     this.client = new Client({
       authStrategy: new LocalAuth({ dataPath: this.sessionDir }),
       puppeteer: {
         headless: true,
         protocolTimeout: 180000,
+        dumpio: String(process.env.WA_DUMPIO || '') === '1',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -40,59 +67,165 @@ class WhatsAppBot {
       },
     });
 
-    this.client.on('qr', async (qr) => {
+    const client = this.client;
+
+    client.on('qr', async (qr) => {
       this.status = 'qr';
       try {
         this.qrCodeBase64 = await qrcode.toDataURL(qr);
       } catch (e) {}
     });
 
-    this.client.on('ready', () => {
+    client.on('ready', () => {
       this.status = 'ready';
       this.ready = true;
+      this.attempt = 0;
       this.qrCodeBase64 = null;
+      this.lastError = null;
+      this.stopReadyWatchdog();
       try {
-        this.phoneNumber = this.client.info && this.client.info.wid ? this.client.info.wid.user : null;
+        this.phoneNumber = client.info && client.info.wid ? client.info.wid.user : null;
       } catch (e) {}
       console.log('[whatsapp] conectado: ' + this.phoneNumber);
     });
 
-    this.client.on('auth_failure', (m) => {
+    client.on('auth_failure', (m) => {
       this.status = 'error';
       this.ready = false;
       this.lastError = String(m);
+      this.stopReadyWatchdog();
     });
 
-    this.client.on('disconnected', (r) => {
+    client.on('disconnected', (r) => {
       this.status = 'disconnected';
       this.ready = false;
       this.lastError = String(r);
-      this.started = false;
-      this.client = null;
+      this.stopReadyWatchdog();
+      if (this.client === client) {
+        this.started = false;
+        this.client = null;
+      }
     });
 
+    let timer = null;
     try {
-      await this.client.initialize();
+      await Promise.race([
+        client.initialize(),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('timeout ao iniciar o WhatsApp (' + Math.round(INIT_TIMEOUT_MS / 1000) + 's)')),
+            INIT_TIMEOUT_MS
+          );
+        }),
+      ]);
+      this.startReadyWatchdog();
     } catch (err) {
       this.status = 'error';
       this.lastError = err && (err.stack || err.message) ? err.stack || err.message : String(err);
-      this.started = false;
-      this.client = null;
-      console.error('[whatsapp] erro ao iniciar:', this.lastError);
+      console.error('[whatsapp] erro ao iniciar (tentativa ' + attempt + '):', this.lastError);
+      await this.destroyClient(client);
+      if (this.started && attempt < MAX_INIT_ATTEMPTS) {
+        const delay = 5000 * attempt;
+        console.log('[whatsapp] nova tentativa em ' + delay / 1000 + 's');
+        this.retryTimer = setTimeout(() => this.connect(), delay);
+      } else if (this.started) {
+        console.error('[whatsapp] desistindo apos ' + attempt + ' tentativas; nova rodada em 120s');
+        this.retryTimer = setTimeout(() => {
+          this.attempt = 0;
+          this.connect();
+        }, 120000);
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
-  async stop(cleanSession = false) {
-    if (this.client) {
+  // Bug conhecido: se o app-state sync do WhatsApp Web termina antes do
+  // whatsapp-web.js expor window.onAppStateHasSyncedEvent, o evento `ready`
+  // nunca e emitido (o socket fica CONNECTED para sempre). Aqui detectamos
+  // esse caso e chamamos a funcao manualmente.
+  startReadyWatchdog() {
+    this.stopReadyWatchdog();
+    this.syncPokes = 0;
+    this.readyWatchdog = setInterval(() => {
+      if (this.ready || !this.client) {
+        this.stopReadyWatchdog();
+        return;
+      }
+      if (this.syncPokes >= 10) return;
+      this.pokeAppStateSync().catch(() => {});
+    }, READY_WATCHDOG_MS);
+  }
+
+  stopReadyWatchdog() {
+    if (this.readyWatchdog) {
+      clearInterval(this.readyWatchdog);
+      this.readyWatchdog = null;
+    }
+  }
+
+  async pokeAppStateSync() {
+    const client = this.client;
+    if (!client || !client.pupPage) return false;
+    const info = await client.pupPage.evaluate(() => {
+      const out = { state: null, injected: false, syncFn: null };
       try {
-        await this.client.destroy();
+        out.state = window.require('WAWebSocketModel').Socket.state;
+      } catch (e) {}
+      try {
+        out.injected = typeof window.WWebJS !== 'undefined';
+      } catch (e) {}
+      try {
+        out.syncFn = typeof window.onAppStateHasSyncedEvent;
+      } catch (e) {}
+      return out;
+    });
+    if (!info || info.state !== 'CONNECTED' || !info.injected || info.syncFn !== 'function') {
+      return false;
+    }
+    this.syncPokes += 1;
+    console.log(
+      '[whatsapp] app-state sync nao disparou; forcando ready (tentativa ' + this.syncPokes + ')'
+    );
+    await client.pupPage.evaluate(() => {
+      window.onAppStateHasSyncedEvent();
+    });
+    return true;
+  }
+
+  removeSingletonLocks() {
+    const dir = path.join(this.sessionDir, 'session');
+    for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      try {
+        fs.rmSync(path.join(dir, name), { force: true });
       } catch (e) {}
     }
-    this.client = null;
-    this.ready = false;
+  }
+
+  async destroyClient(client) {
+    this.stopReadyWatchdog();
+    const target = client || this.client;
+    if (!target) return;
+    try {
+      await target.destroy();
+    } catch (e) {}
+    if (this.client === target) this.client = null;
+    // Da tempo do Chrome liberar o perfil antes da proxima tentativa.
+    await sleep(1500);
+    this.removeSingletonLocks();
+  }
+
+  async stop(cleanSession = false) {
     this.started = false;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    await this.destroyClient(this.client);
+    this.ready = false;
     this.status = 'stopped';
     this.qrCodeBase64 = null;
+    this.attempt = 0;
     if (cleanSession) {
       try {
         if (fs.existsSync(this.sessionDir)) fs.rmSync(this.sessionDir, { recursive: true, force: true });

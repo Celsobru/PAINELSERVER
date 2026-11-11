@@ -47,6 +47,21 @@ app.get(BASE, (req, res) => res.redirect(BASE + '/'));
 app.get(BASE + '/*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/', (req, res) => res.redirect(BASE + '/'));
 
+// Fecha o Chrome do WhatsApp antes de sair, para nao deixar perfil travado
+// (SingletonLock) quando o pm2 reinicia o processo.
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('[painelserver] encerrando (' + signal + ')...');
+  try {
+    await Promise.race([whatsapp.stop(), new Promise((r) => setTimeout(r, 8000))]);
+  } catch (e) {}
+  process.exit(0);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
 (async () => {
   await db.init();
   app.listen(PORT, () => {
