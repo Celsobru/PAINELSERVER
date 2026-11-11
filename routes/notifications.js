@@ -28,6 +28,8 @@ router.post('/charge/:id', async (req, res) => {
     pix: built.pix,
     pixStatus: out.pixStatus,
     pixError: out.pixError,
+    qrStatus: out.qrStatus,
+    qrError: out.qrError,
   });
 });
 

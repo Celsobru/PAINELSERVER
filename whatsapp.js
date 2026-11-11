@@ -119,11 +119,29 @@ class WhatsAppBot {
     if (!this.ready || !this.client) {
       throw new Error('WhatsApp nao conectado. Escaneie o QR Code no painel.');
     }
+    const chatId = this.chatId(number);
+    return await this.client.sendMessage(chatId, text);
+  }
+
+  chatId(number) {
     let digits = String(number || '').replace(/\D/g, '');
     if (!digits) throw new Error('Numero invalido');
     if (digits.length <= 11) digits = '55' + digits;
-    const chatId = digits + '@c.us';
-    return await this.client.sendMessage(chatId, text);
+    return digits + '@c.us';
+  }
+
+  // Envia uma imagem (Buffer) com legenda opcional.
+  async sendImage(number, buffer, filename, caption) {
+    if (!this.ready || !this.client) {
+      throw new Error('WhatsApp nao conectado. Escaneie o QR Code no painel.');
+    }
+    const { MessageMedia } = require('whatsapp-web.js');
+    const media = new MessageMedia(
+      'image/png',
+      Buffer.from(buffer).toString('base64'),
+      filename || 'imagem.png'
+    );
+    return await this.client.sendMessage(this.chatId(number), media, caption ? { caption } : {});
   }
 }
 

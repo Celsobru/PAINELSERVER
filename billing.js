@@ -4,6 +4,7 @@ const { all, get, run } = require('./db');
 const whatsapp = require('./whatsapp');
 const pix = require('./pix');
 const c6 = require('./c6');
+const QRCode = require('qrcode');
 
 /* ---------- formatos ---------- */
 function formatBRL(cents) {
@@ -130,15 +131,20 @@ async function sendAndLog(payload) {
   let status = 'queued';
   let error = null;
   try {
-    await whatsapp.sendMessage(payload.phone, payload.message);
+    if (payload.image) {
+      await whatsapp.sendImage(payload.phone, payload.image, payload.filename, payload.caption);
+    } else {
+      await whatsapp.sendMessage(payload.phone, payload.message);
+    }
     status = 'sent';
   } catch (e) {
     status = 'failed';
     error = e.message || String(e);
   }
+  const logMessage = payload.message || (payload.image ? '[QR Code Pix]' : '');
   const r = await run(
     "INSERT INTO notifications (client_id, charge_id, channel, destination, message, status, error, sent_at) VALUES (?,?, 'whatsapp', ?,?,?,?, CASE WHEN ? = 'sent' THEN datetime('now') ELSE NULL END)",
-    [payload.client_id || null, payload.charge_id || null, payload.phone, payload.message, status, error, status]
+    [payload.client_id || null, payload.charge_id || null, payload.phone, logMessage, status, error, status]
   );
   return { id: r.id, status, error };
 }
@@ -157,6 +163,7 @@ async function sendChargeMessages(payload) {
     message: payload.message,
   });
   let pixOut = null;
+  let qrOut = null;
   const pix = payload.pix;
   const alreadyInline = pix && String(payload.message || '').indexOf(pix) !== -1;
   if (textOut.status === 'sent' && pix && !alreadyInline) {
@@ -166,10 +173,28 @@ async function sendChargeMessages(payload) {
       phone: payload.phone,
       message: pix,
     });
+    // Depois do codigo, envia tambem a imagem do QR Code (quem preferir escanear).
+    if (pixOut.status === 'sent') {
+      try {
+        const image = await QRCode.toBuffer(pix, { type: 'png', width: 640, margin: 2 });
+        qrOut = await sendAndLog({
+          client_id: payload.client_id,
+          charge_id: payload.charge_id,
+          phone: payload.phone,
+          image,
+          filename: 'pix-qrcode.png',
+          caption: 'QR Code Pix',
+        });
+      } catch (e) {
+        qrOut = { status: 'failed', error: e.message || String(e) };
+      }
+    }
   }
   return Object.assign({}, textOut, {
     pixStatus: pixOut ? pixOut.status : (pix ? 'skipped' : 'none'),
     pixError: pixOut ? pixOut.error : null,
+    qrStatus: qrOut ? qrOut.status : (pix ? 'skipped' : 'none'),
+    qrError: qrOut ? qrOut.error : null,
   });
 }
 
