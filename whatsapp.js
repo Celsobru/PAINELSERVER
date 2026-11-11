@@ -27,6 +27,7 @@ class WhatsAppBot {
       authStrategy: new LocalAuth({ dataPath: this.sessionDir }),
       puppeteer: {
         headless: true,
+        protocolTimeout: 180000,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
