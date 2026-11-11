@@ -61,15 +61,29 @@ router.post('/remind-overdue', async (req, res) => {
         AND c.phone IS NOT NULL AND TRIM(c.phone) <> ''`
   );
   let sent = 0, failed = 0;
+  const errors = [];
   for (const ch of rows) {
     try {
       const out = await billing.sendCharge(ch);
-      if (out.status === 'sent') sent++; else failed++;
+      if (out.status === 'sent') {
+        sent++;
+      } else {
+        failed++;
+        errors.push((ch.client_name || 'Cobranca #' + ch.id) + ': ' + (out.error || 'falha no envio'));
+      }
     } catch (e) {
       failed++;
+      errors.push((ch.client_name || 'Cobranca #' + ch.id) + ': ' + (e.message || String(e)));
     }
   }
-  res.json({ success: true, total: rows.length, sent, failed });
+  res.json({
+    success: failed === 0,
+    total: rows.length,
+    sent,
+    failed,
+    errors: errors.slice(0, 5),
+    message: rows.length === 0 ? 'Nenhuma cobranca pendente com telefone cadastrado.' : undefined,
+  });
 });
 
 // Modelos de mensagem

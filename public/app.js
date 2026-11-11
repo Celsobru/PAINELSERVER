@@ -277,8 +277,12 @@ async function renderCharges() {
   root.querySelector('#charge-new').onclick = () => chargeForm(null, null);
   root.querySelector('#charge-remind').onclick = async () => {
     if (!confirm('Enviar cobrança no WhatsApp para TODOS os pendentes?')) return;
+    toast('Enviando cobranças...', 'ok');
     const r = await apiCall('notifications/remind-overdue', 'POST', {});
-    toast('Enviados: ' + r.sent + ' | Falhas: ' + r.failed, r.failed ? 'err' : 'ok');
+    if (r.message) return toast(r.message, 'err');
+    let msg = 'Enviados: ' + r.sent + ' | Falhas: ' + r.failed;
+    if (r.failed && r.errors && r.errors.length) msg += ' — ' + r.errors[0];
+    toast(msg, r.failed ? 'err' : 'ok');
   };
   root.querySelectorAll('[data-pay]').forEach((b) => b.onclick = () => payCharge(b.dataset.pay));
   root.querySelectorAll('[data-wa]').forEach((b) => b.onclick = () => sendChargeWA(b.dataset.wa));

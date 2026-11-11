@@ -9,7 +9,13 @@ const fs = require('fs');
 const INIT_TIMEOUT_MS = Number(process.env.WA_INIT_TIMEOUT_MS || 90000);
 // Se o app-state sync do WhatsApp Web nao disparar, forcamos a mao.
 const READY_WATCHDOG_MS = Number(process.env.WA_READY_WATCHDOG_MS || 20000);
+// Verificacao periodica: o Chrome pode morrer e o wwebjs nao avisa ninguem.
+const HEALTH_CHECK_MS = Number(process.env.WA_HEALTH_CHECK_MS || 45000);
 const MAX_INIT_ATTEMPTS = 3;
+
+// Erros que significam "a pagina/aba morreu" e nao "o envio deu errado".
+const STALE_ERROR_RE =
+  /detached Frame|Target closed|Session closed|Execution context was destroyed|Protocol error|ProtocolError|browser has disconnected|Connection closed|Cannot read properties of null/i;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -28,7 +34,10 @@ class WhatsAppBot {
     this.attempt = 0;
     this.syncPokes = 0;
     this.readyWatchdog = null;
+    this.healthTimer = null;
     this.retryTimer = null;
+    this.recovering = null;
+    this.destroying = false;
   }
 
   async start() {
@@ -86,6 +95,7 @@ class WhatsAppBot {
       try {
         this.phoneNumber = client.info && client.info.wid ? client.info.wid.user : null;
       } catch (e) {}
+      this.startHealthCheck();
       console.log('[whatsapp] conectado: ' + this.phoneNumber);
     });
 
@@ -94,17 +104,30 @@ class WhatsAppBot {
       this.ready = false;
       this.lastError = String(m);
       this.stopReadyWatchdog();
+      this.stopHealthCheck();
     });
 
     client.on('disconnected', (r) => {
-      this.status = 'disconnected';
+      const reason = String(r);
       this.ready = false;
-      this.lastError = String(r);
+      this.lastError = reason;
       this.stopReadyWatchdog();
-      if (this.client === client) {
+      this.stopHealthCheck();
+      if (this.client === client) this.client = null;
+      if (reason === 'LOGOUT') {
+        this.status = 'disconnected';
         this.started = false;
-        this.client = null;
+        console.log('[whatsapp] sessao encerrada (logout). Escaneie o QR Code no painel.');
+        return;
       }
+      this.status = 'disconnected';
+      console.log('[whatsapp] desconectado (' + reason + '); reconectando em 15s');
+      setTimeout(() => {
+        if (this.started && !this.recovering) {
+          this.attempt = 0;
+          this.connect();
+        }
+      }, 15000);
     });
 
     let timer = null;
@@ -119,6 +142,14 @@ class WhatsAppBot {
         }),
       ]);
       this.startReadyWatchdog();
+      // Se o Chrome fechar, o wwebjs nao avisa: escutamos direto no puppeteer.
+      if (client.pupBrowser) {
+        client.pupBrowser.on('disconnected', () => {
+          if (this.destroying) return;
+          if (this.client !== client || !this.started || this.recovering) return;
+          this.recover('navegador fechou').catch(() => {});
+        });
+      }
     } catch (err) {
       this.status = 'error';
       this.lastError = err && (err.stack || err.message) ? err.stack || err.message : String(err);
@@ -193,6 +224,104 @@ class WhatsAppBot {
     return true;
   }
 
+  // O Chrome pode morrer (ou a aba ser recarregada) sem o wwebjs emitir nada.
+  // Sem isso, o painel fica "ready" para sempre e todo envio falha.
+  startHealthCheck() {
+    this.stopHealthCheck();
+    this.healthTimer = setInterval(() => {
+      this.checkHealth().catch(() => {});
+    }, HEALTH_CHECK_MS);
+  }
+
+  stopHealthCheck() {
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
+    }
+  }
+
+  async checkHealth() {
+    const client = this.client;
+    if (!this.ready || !client || !this.started) return;
+    const browser = client.pupBrowser;
+    if (browser && typeof browser.isConnected === 'function' && !browser.isConnected()) {
+      return this.recover('navegador desconectado');
+    }
+    try {
+      const state = await client.pupPage.evaluate(() => {
+        const out = { readyState: document.readyState, socket: null };
+        try {
+          out.socket = window.require('WAWebSocketModel').Socket.state;
+        } catch (e) {}
+        return out;
+      });
+      if (!state || !state.readyState) throw new Error('pagina sem readyState');
+      if (state.socket && state.socket !== 'CONNECTED') {
+        return this.recover('socket ' + state.socket);
+      }
+    } catch (e) {
+      return this.recover('health check falhou: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  // Fecha o client atual e abre outro, mantendo a sessao salva em disco.
+  recover(reason) {
+    if (this.recovering) return this.recovering;
+    if (!this.started) return Promise.resolve(false);
+    console.log('[whatsapp] recuperando conexao (' + reason + ')');
+    this.ready = false;
+    this.status = 'initializing';
+    this.stopReadyWatchdog();
+    this.stopHealthCheck();
+    const client = this.client;
+    this.recovering = (async () => {
+      try {
+        await this.destroyClient(client);
+      } catch (e) {}
+      this.attempt = 0;
+      this.recovering = null;
+      if (this.started) await this.connect();
+      return true;
+    })();
+    return this.recovering;
+  }
+
+  isStaleError(err) {
+    const msg = String((err && err.message) || err || '');
+    return STALE_ERROR_RE.test(msg);
+  }
+
+  waitReady(timeoutMs) {
+    return new Promise((resolve, reject) => {
+      if (this.ready) return resolve(true);
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        if (this.ready) {
+          clearInterval(iv);
+          resolve(true);
+        } else if (Date.now() - t0 > timeoutMs) {
+          clearInterval(iv);
+          reject(new Error('WhatsApp reconectando. Tente enviar novamente em instantes.'));
+        }
+      }, 1000);
+    });
+  }
+
+  // Executa o envio; se a pagina tiver morrido, reinicia e tenta uma vez mais.
+  async withRecovery(label, fn) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!this.isStaleError(err)) throw err;
+      console.log(
+        '[whatsapp] ' + label + ' falhou (' + (err.message || err) + '); reiniciando conexao'
+      );
+      await this.recover('envio falhou: ' + (err.message || err));
+      await this.waitReady(120000);
+      return await fn();
+    }
+  }
+
   removeSingletonLocks() {
     const dir = path.join(this.sessionDir, 'session');
     for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
@@ -204,11 +333,16 @@ class WhatsAppBot {
 
   async destroyClient(client) {
     this.stopReadyWatchdog();
+    this.stopHealthCheck();
     const target = client || this.client;
     if (!target) return;
+    this.destroying = true;
     try {
-      await target.destroy();
-    } catch (e) {}
+      await Promise.race([target.destroy(), sleep(10000)]);
+    } catch (e) {
+    } finally {
+      this.destroying = false;
+    }
     if (this.client === target) this.client = null;
     // Da tempo do Chrome liberar o perfil antes da proxima tentativa.
     await sleep(1500);
@@ -217,6 +351,7 @@ class WhatsAppBot {
 
   async stop(cleanSession = false) {
     this.started = false;
+    this.recovering = null;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
@@ -253,7 +388,7 @@ class WhatsAppBot {
       throw new Error('WhatsApp nao conectado. Escaneie o QR Code no painel.');
     }
     const chatId = this.chatId(number);
-    return await this.client.sendMessage(chatId, text);
+    return await this.withRecovery('envio de texto', () => this.client.sendMessage(chatId, text));
   }
 
   chatId(number) {
@@ -274,7 +409,9 @@ class WhatsAppBot {
       Buffer.from(buffer).toString('base64'),
       filename || 'imagem.png'
     );
-    return await this.client.sendMessage(this.chatId(number), media, caption ? { caption } : {});
+    return await this.withRecovery('envio de imagem', () =>
+      this.client.sendMessage(this.chatId(number), media, caption ? { caption } : {})
+    );
   }
 }
 
